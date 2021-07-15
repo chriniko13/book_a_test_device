@@ -4,27 +4,30 @@ import akka.actor.typed.*;
 import akka.actor.typed.javadsl.*;
 import com.chriniko.mob.booking.service.domain.DeviceShortInfo;
 import com.chriniko.mob.booking.service.dto.PhoneBookedResult;
+import io.vavr.Tuple;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.ToString;
 
+import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
+@Getter
 public class MobilePhonesManager extends AbstractBehavior<MobilePhonesManager.MobilePhonesManagerMessage> {
 
     // Note: in a real world system, this can be fetched from a database.
     private final Map<String /*deviceId*/, DeviceShortInfo> deviceShortInfoById;
 
     // Note: routers
-    private final ActorRef<MobilePhonesWorker.Command> samsungWorkerRouter;
-    private final ActorRef<MobilePhonesWorker.Command> motorolaWorkerRouter;
-    private final ActorRef<MobilePhonesWorker.Command> lgWorkerRouter;
-    private final ActorRef<MobilePhonesWorker.Command> huaweiWorkerRouter;
-    private final ActorRef<MobilePhonesWorker.Command> appleWorkerRouter;
-    private final ActorRef<MobilePhonesWorker.Command> nokiaWorkerRouter;
+    private final List<String> supportedBrands = Arrays.asList("samsung", "motorola", "lg", "huawei", "apple", "nokia");
+    private final Map<String, ActorRef<MobilePhonesWorker.Command>> routersByBrand;
+
 
     private final ActorRef<MobilePhonesStateKeeper.Command> mobilePhonesStateKeeperActorRef;
+
 
     public MobilePhonesManager(ActorContext<MobilePhonesManagerMessage> context) {
         super(context);
@@ -32,57 +35,27 @@ public class MobilePhonesManager extends AbstractBehavior<MobilePhonesManager.Mo
         deviceShortInfoById = setupDeviceIds();
         mobilePhonesStateKeeperActorRef = context.spawn(MobilePhonesStateKeeper.create(), "mob-phones-state-keeper");
 
-        // Note: now setup router pools per device brand.
         final int poolSize = 2;
-        PoolRouter<MobilePhonesWorker.Command> samsungWorkerPool =
-                Routers.pool(
-                        poolSize,
-                        // make sure the workers are restarted if they fail
-                        Behaviors.supervise(MobilePhonesWorker.create(mobilePhonesStateKeeperActorRef)).onFailure(SupervisorStrategy.restart())
-                ).withRouteeProps(DispatcherSelector.blocking()).withRoundRobinRouting();
-        samsungWorkerRouter = context.spawn(samsungWorkerPool, "samsung-worker-pool", DispatcherSelector.sameAsParent());
 
-        PoolRouter<MobilePhonesWorker.Command> motorolaWorkerPool =
-                Routers.pool(
-                        poolSize,
-                        // make sure the workers are restarted if they fail
-                        Behaviors.supervise(MobilePhonesWorker.create(mobilePhonesStateKeeperActorRef)).onFailure(SupervisorStrategy.restart())
-                ).withRouteeProps(DispatcherSelector.blocking()).withRoundRobinRouting();
-        motorolaWorkerRouter = context.spawn(motorolaWorkerPool, "motorola-worker-pool", DispatcherSelector.sameAsParent());
+        routersByBrand = supportedBrands.stream()
+                .map(brand -> {
+
+                    String routerName = brand + "-worker-pool";
+
+                    PoolRouter<MobilePhonesWorker.Command> samsungWorkerPool =
+                            Routers.pool(
+                                    poolSize,
+                                    // make sure the workers are restarted if they fail
+                                    Behaviors.supervise(MobilePhonesWorker.create(mobilePhonesStateKeeperActorRef)).onFailure(SupervisorStrategy.restart())
+                            ).withRouteeProps(DispatcherSelector.blocking()).withRoundRobinRouting();
 
 
-        PoolRouter<MobilePhonesWorker.Command> lgWorkerPool =
-                Routers.pool(
-                        poolSize,
-                        // make sure the workers are restarted if they fail
-                        Behaviors.supervise(MobilePhonesWorker.create(mobilePhonesStateKeeperActorRef)).onFailure(SupervisorStrategy.restart())
-                ).withRouteeProps(DispatcherSelector.blocking()).withRoundRobinRouting();
-        lgWorkerRouter = context.spawn(lgWorkerPool, "lg-worker-pool", DispatcherSelector.sameAsParent());
+                    ActorRef<MobilePhonesWorker.Command> router = context.spawn(samsungWorkerPool, routerName, DispatcherSelector.sameAsParent());
 
-        PoolRouter<MobilePhonesWorker.Command> huaweiWorkerPool =
-                Routers.pool(
-                        poolSize,
-                        // make sure the workers are restarted if they fail
-                        Behaviors.supervise(MobilePhonesWorker.create(mobilePhonesStateKeeperActorRef)).onFailure(SupervisorStrategy.restart())
-                ).withRouteeProps(DispatcherSelector.blocking()).withRoundRobinRouting();
-        huaweiWorkerRouter = context.spawn(huaweiWorkerPool, "huawei-worker-pool", DispatcherSelector.sameAsParent());
+                    return Tuple.of(brand, router);
 
-        PoolRouter<MobilePhonesWorker.Command> appleWorkerPool =
-                Routers.pool(
-                        poolSize,
-                        // make sure the workers are restarted if they fail
-                        Behaviors.supervise(MobilePhonesWorker.create(mobilePhonesStateKeeperActorRef)).onFailure(SupervisorStrategy.restart())
-                ).withRouteeProps(DispatcherSelector.blocking()).withRoundRobinRouting();
-        appleWorkerRouter = context.spawn(appleWorkerPool, "apple-worker-pool", DispatcherSelector.sameAsParent());
-
-        PoolRouter<MobilePhonesWorker.Command> nokiaWorkerPool =
-                Routers.pool(
-                        poolSize,
-                        // make sure the workers are restarted if they fail
-                        Behaviors.supervise(MobilePhonesWorker.create(mobilePhonesStateKeeperActorRef)).onFailure(SupervisorStrategy.restart())
-                ).withRouteeProps(DispatcherSelector.blocking()).withRoundRobinRouting();
-        nokiaWorkerRouter = context.spawn(nokiaWorkerPool, "nokia-worker-pool", DispatcherSelector.sameAsParent());
-
+                })
+                .collect(Collectors.toMap(r -> r._1, r -> r._2));
     }
 
 
@@ -113,25 +86,17 @@ public class MobilePhonesManager extends AbstractBehavior<MobilePhonesManager.Mo
                     }
 
 
-                    final String modelId = deviceShortInfo.getModelId().toLowerCase();
-                    getContext().getLog().info("book phone command received, bookPhone: {}, from: {}, modelId: {}", bookPhone, from, modelId);
+                    final String brand = deviceShortInfo.getBrand().toLowerCase();
+                    getContext().getLog().info("book phone command received, bookPhone: {}, from: {}, brand: {}", bookPhone, from, brand);
 
 
                     final MobilePhonesWorker.DoBookMobile doBookMobile = new MobilePhonesWorker.DoBookMobile(from, self, bookPhone.username, deviceId);
-                    if (modelId.contains("samsung")) {
-                        samsungWorkerRouter.tell(doBookMobile);
-                    } else if (modelId.contains("motorola")) {
-                        motorolaWorkerRouter.tell(doBookMobile);
-                    } else if (modelId.contains("lg")) {
-                        lgWorkerRouter.tell(doBookMobile);
-                    } else if (modelId.contains("huawei")) {
-                        huaweiWorkerRouter.tell(doBookMobile);
-                    } else if (modelId.contains("apple")) {
-                        appleWorkerRouter.tell(doBookMobile);
-                    } else if (modelId.contains("nokia")) {
-                        nokiaWorkerRouter.tell(doBookMobile);
+
+                    final ActorRef<MobilePhonesWorker.Command> router = routersByBrand.get(brand);
+                    if (router == null) {
+                        from.tell(new PhoneBooked(null, false, null, "modelId of device is not registered, brand: " + brand));
                     } else {
-                        from.tell(new PhoneBooked(null, false, null, "modelId of device is not registered, modelId: " + modelId));
+                        router.tell(doBookMobile);
                     }
 
                     return this;
@@ -159,25 +124,17 @@ public class MobilePhonesManager extends AbstractBehavior<MobilePhonesManager.Mo
                         return this;
                     }
 
-                    final String modelId = deviceShortInfo.getModelId().toLowerCase();
-                    getContext().getLog().info("book return command received, returnPhone: {}, from: {}, modelId: {}", returnPhone, from, modelId);
+                    final String brand = deviceShortInfo.getBrand().toLowerCase();
+                    getContext().getLog().info("book return command received, returnPhone: {}, from: {}, brand: {}", returnPhone, from, brand);
 
 
                     final MobilePhonesWorker.DoReturnMobile doReturnMobile = new MobilePhonesWorker.DoReturnMobile(from, self, deviceId);
-                    if (modelId.contains("samsung")) {
-                        samsungWorkerRouter.tell(doReturnMobile);
-                    } else if (modelId.contains("motorola")) {
-                        motorolaWorkerRouter.tell(doReturnMobile);
-                    } else if (modelId.contains("lg")) {
-                        lgWorkerRouter.tell(doReturnMobile);
-                    } else if (modelId.contains("huawei")) {
-                        huaweiWorkerRouter.tell(doReturnMobile);
-                    } else if (modelId.contains("apple")) {
-                        appleWorkerRouter.tell(doReturnMobile);
-                    } else if (modelId.contains("nokia")) {
-                        nokiaWorkerRouter.tell(doReturnMobile);
+                    final ActorRef<MobilePhonesWorker.Command> router = routersByBrand.get(brand);
+
+                    if (router == null) {
+                        from.tell(new PhoneReturned(null, false, null, "modelId of device is not registered, brand: " + brand));
                     } else {
-                        from.tell(new PhoneReturned(null, false, null, "modelId of device is not registered, modelId: " + modelId));
+                        router.tell(doReturnMobile);
                     }
 
                     return this;
@@ -210,16 +167,16 @@ public class MobilePhonesManager extends AbstractBehavior<MobilePhonesManager.Mo
     private Map<String, DeviceShortInfo> setupDeviceIds() {
         final Map<String, DeviceShortInfo> deviceShortInfoById;
         deviceShortInfoById = new LinkedHashMap<>();
-        deviceShortInfoById.put("7fe1c6e5-7bda-4297-8a70-b9b5d4a87f09", new DeviceShortInfo("Samsung Galaxy S9", "samsung_galaxy_s9"));
-        deviceShortInfoById.put("76aa4f02-0956-4bc8-b092-723fe2f4944a", new DeviceShortInfo("Samsung Galaxy S8", "samsung_galaxy_s8"));
-        deviceShortInfoById.put("7e8fe38d-1b85-4907-8409-13ddab799757", new DeviceShortInfo("Samsung Galaxy S7", "samsung_galaxy_s7"));
-        deviceShortInfoById.put("0712d2b8-864d-41ba-ab7f-15e049aac03c", new DeviceShortInfo("Motorola Nexus 6", "motorola_nexus_6"));
-        deviceShortInfoById.put("91b287f4-4d9e-4e6a-8327-31c80c4973fb", new DeviceShortInfo("LG Nexus 5X", "lg_nexus_5x"));
-        deviceShortInfoById.put("68ed4db2-e030-455f-9073-d84578b8059c", new DeviceShortInfo("Huawei Honor 7X", "huawei_honor_7x"));
-        deviceShortInfoById.put("a383db47-b1fa-48f5-826d-b755f644d6a6", new DeviceShortInfo("Apple iPhone X", "apple_iphone_x"));
-        deviceShortInfoById.put("aeca925b-8103-4f14-8aea-ae7c9478b3b3", new DeviceShortInfo("Apple iPhone 8", "apple_iphone_8"));
-        deviceShortInfoById.put("cbc0e576-6836-4c0f-8215-188b77502e35", new DeviceShortInfo("Apple iPhone 4s", "apple_iphone_4s"));
-        deviceShortInfoById.put("8170aaa5-b29c-4c72-af68-40e51514ac7a", new DeviceShortInfo("Nokia 3310", "nokia_3310"));
+        deviceShortInfoById.put("7fe1c6e5-7bda-4297-8a70-b9b5d4a87f09", new DeviceShortInfo("Samsung Galaxy S9", "samsung_galaxy_s9", "samsung"));
+        deviceShortInfoById.put("76aa4f02-0956-4bc8-b092-723fe2f4944a", new DeviceShortInfo("Samsung Galaxy S8", "samsung_galaxy_s8", "samsung"));
+        deviceShortInfoById.put("7e8fe38d-1b85-4907-8409-13ddab799757", new DeviceShortInfo("Samsung Galaxy S7", "samsung_galaxy_s7", "samsung"));
+        deviceShortInfoById.put("0712d2b8-864d-41ba-ab7f-15e049aac03c", new DeviceShortInfo("Motorola Nexus 6", "motorola_nexus_6", "motorola"));
+        deviceShortInfoById.put("91b287f4-4d9e-4e6a-8327-31c80c4973fb", new DeviceShortInfo("LG Nexus 5X", "lg_nexus_5x", "lg"));
+        deviceShortInfoById.put("68ed4db2-e030-455f-9073-d84578b8059c", new DeviceShortInfo("Huawei Honor 7X", "huawei_honor_7x", "huawei"));
+        deviceShortInfoById.put("a383db47-b1fa-48f5-826d-b755f644d6a6", new DeviceShortInfo("Apple iPhone X", "apple_iphone_x", "apple"));
+        deviceShortInfoById.put("aeca925b-8103-4f14-8aea-ae7c9478b3b3", new DeviceShortInfo("Apple iPhone 8", "apple_iphone_8", "apple"));
+        deviceShortInfoById.put("cbc0e576-6836-4c0f-8215-188b77502e35", new DeviceShortInfo("Apple iPhone 4s", "apple_iphone_4s", "apple"));
+        deviceShortInfoById.put("8170aaa5-b29c-4c72-af68-40e51514ac7a", new DeviceShortInfo("Nokia 3310", "nokia_3310", "nokia"));
         return deviceShortInfoById;
     }
 

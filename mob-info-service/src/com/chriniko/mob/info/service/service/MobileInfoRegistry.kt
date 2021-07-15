@@ -3,7 +3,6 @@ package com.chriniko.mob.info.service.service
 import com.chriniko.mob.info.service.domain.MobileBand
 import com.chriniko.mob.info.service.domain.MobileInfo
 import com.chriniko.mob.info.service.domain.MobileTechnology
-import java.util.*
 
 class MobileInfoRegistry() {
 

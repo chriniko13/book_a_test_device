@@ -9,4 +9,6 @@ public class DeviceShortInfo {
 
     private final String model;
     private final String modelId;
+
+    private final String brand;
 }
